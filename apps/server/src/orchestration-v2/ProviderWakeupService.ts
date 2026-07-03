@@ -11,6 +11,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 
 import { OrchestratorV2, type OrchestratorV2Shape } from "./Orchestrator.ts";
 import { ProviderWakeupObserver } from "./ProviderSessionManager.ts";
@@ -163,14 +164,51 @@ export const runWakeupDispatcher: Effect.Effect<
   never,
   never,
   ProviderWakeupRelay | OrchestratorV2
-> = Effect.gen(function* () {
-  const relay = yield* ProviderWakeupRelay;
-  const orchestrator = yield* OrchestratorV2;
-  return yield* relay.take.pipe(
-    Effect.flatMap((input) => dispatchWakeup(orchestrator, input)),
-    Effect.forever,
-  );
-});
+> = Effect.scoped(
+  Effect.gen(function* () {
+    const relay = yield* ProviderWakeupRelay;
+    const orchestrator = yield* OrchestratorV2;
+    // Wakeups dispatch concurrently, one in flight per thread: quiescence
+    // waiting for one busy thread must not head-of-line-block every other
+    // thread's wakeup (which could be superseded while it waits). A wakeup
+    // arriving while its thread already has one in flight is coalesced away —
+    // the adapter buffers all pending activity behind a single attach.
+    const inFlightThreads = yield* Ref.make(new Set<ThreadId>());
+    return yield* relay.take.pipe(
+      Effect.flatMap((input) =>
+        Ref.modify(inFlightThreads, (current) => {
+          if (current.has(input.threadId)) {
+            return [false, current] as const;
+          }
+          const next = new Set(current);
+          next.add(input.threadId);
+          return [true, next] as const;
+        }).pipe(
+          Effect.flatMap((claimed) =>
+            claimed
+              ? dispatchWakeup(orchestrator, input).pipe(
+                  Effect.ensuring(
+                    Ref.update(inFlightThreads, (current) => {
+                      const next = new Set(current);
+                      next.delete(input.threadId);
+                      return next;
+                    }),
+                  ),
+                  Effect.forkScoped,
+                  Effect.asVoid,
+                )
+              : Effect.logInfo("orchestration-v2.provider-wakeup.coalesced", {
+                  threadId: input.threadId,
+                  providerThreadId: input.providerThreadId,
+                  origin: input.origin,
+                }),
+          ),
+        ),
+      ),
+      Effect.forever,
+    );
+  }),
+);
 
 export const wakeupDispatcherDaemonLayer: Layer.Layer<
   never,

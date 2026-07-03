@@ -37,6 +37,7 @@ import {
   type ProviderAdapterV2Event,
   type ProviderAdapterV2EventSubscription,
   type ProviderAdapterV2SessionRuntime,
+  type ProviderAdapterV2TurnInput,
 } from "./ProviderAdapter.ts";
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
@@ -979,6 +980,30 @@ export const layerWithOptions = (
                 ),
               ),
             ),
+          // A wakeup-attached run occupies the session exactly like a started
+          // one: without the markBusy pairing the idle reaper sees busyCount 0
+          // and can release the live session mid-turn.
+          ...(runtime.attachTurn === undefined
+            ? {}
+            : {
+                attachTurn: (input: ProviderAdapterV2TurnInput) =>
+                  observeActivity(
+                    providerSessionId,
+                    ensureThreadAttached({
+                      providerSessionId,
+                      threadId: input.threadId,
+                      providerInstanceId: runtime.instanceId,
+                    }),
+                  ).pipe(
+                    Effect.andThen(observeActivity(providerSessionId, markBusy(providerSessionId))),
+                    Effect.andThen(runtime.attachTurn!(input)),
+                    Effect.catch((error) =>
+                      observeActivity(providerSessionId, markIdle(providerSessionId)).pipe(
+                        Effect.andThen(Effect.fail(error)),
+                      ),
+                    ),
+                  ),
+              }),
           steerTurn: (input) =>
             observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
               Effect.andThen(runtime.steerTurn(input)),
@@ -1024,15 +1049,25 @@ export const layerWithOptions = (
         entry: LiveSessionEntry,
         event: Extract<ProviderAdapterV2Event, { readonly type: "turn.wakeup" }>,
       ) =>
-        wakeupObserver
-          .onWakeup({
+        Effect.gen(function* () {
+          // Same staleness guard as persistProviderSessionUpdate: the pump
+          // can still be draining buffered events after releaseEntry removed
+          // (or replaced) this session — a stale wakeup must not dispatch an
+          // attach against the released/replaced runtime.
+          const current = (yield* Ref.get(sessions)).get(
+            sessionKey(entry.runtime.providerSessionId),
+          );
+          if (current?.runtime !== entry.runtime) {
+            return;
+          }
+          yield* wakeupObserver.onWakeup({
             threadId: event.threadId,
             providerThreadId: event.providerThreadId,
             providerInstanceId: entry.runtime.instanceId,
             providerSessionId: entry.runtime.providerSessionId,
             origin: event.origin,
-          })
-          .pipe(
+          });
+        }).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.driver-session.wakeup-observer-failed", {
                 providerSessionId: entry.runtime.providerSessionId,
