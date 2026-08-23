@@ -185,6 +185,11 @@ export function getClientSettings(): ClientSettings {
   return getClientSettingsSnapshot();
 }
 
+/** Imperative word-wrap preference update that any component (hook or not) can call. */
+export function updateClientSettings(patch: ClientSettingsPatch): void {
+  persistClientSettings({ ...getClientSettingsSnapshot(), ...patch });
+}
+
 /**
  * Resolves once client settings have been read from disk.
  *

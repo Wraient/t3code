@@ -67,7 +67,7 @@ import { LRUCache } from "../lib/lruCache";
 import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
 import { RenderErrorBoundary } from "./RenderErrorBoundary";
 import { useTheme } from "../hooks/useTheme";
-import { getClientSettings } from "../hooks/useSettings";
+import { getClientSettings, updateClientSettings, useClientSettings } from "../hooks/useSettings";
 import {
   chatMarkdownClipboardPayload,
   serializeTableElementToCsv,
@@ -427,14 +427,21 @@ function estimateHighlightedSize(html: string, code: string): number {
   return Math.max(html.length * 2, code.length * 3);
 }
 
-function readInitialWordWrapSetting(): boolean {
-  return getClientSettings().wordWrap;
+// Live word-wrap preference: survives virtualizer remounts, unlike component state.
+function useWordWrapPreference(): [boolean, (value: boolean) => void] {
+  const wordWrap = useClientSettings((settings) => settings.wordWrap);
+  return [
+    wordWrap,
+    useCallback((value: boolean) => {
+      updateClientSettings({ wordWrap: value });
+    }, []),
+  ];
 }
 
 function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const tableRef = useRef<HTMLTableElement | null>(null);
-  const [expanded, setExpanded] = useState(readInitialWordWrapSetting);
+  const [expanded, setExpanded] = useWordWrapPreference();
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expandLabel = expanded ? "Collapse table cells" : "Expand table cells";
@@ -461,7 +468,7 @@ function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
       });
     }
 
-    setExpanded((value) => !value);
+    setExpanded(!expanded);
   }
 
   const handleCopy = useCallback((format: "markdown" | "csv") => {
@@ -664,7 +671,7 @@ function MarkdownCodeBlock({
   children: ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
-  const [wrapped, setWrapped] = useState(readInitialWordWrapSetting);
+  const [wrapped, setWrapped] = useWordWrapPreference();
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrapLabel = wrapped ? "Disable line wrap" : "Wrap lines";
   const copyLabel = copied ? "Copied" : "Copy code";
@@ -731,7 +738,7 @@ function MarkdownCodeBlock({
                   size="icon-xs"
                   className="chat-markdown-chrome-action"
                   aria-pressed={wrapped}
-                  onClick={() => setWrapped((value) => !value)}
+                  onClick={() => setWrapped(!wrapped)}
                   aria-label={wrapLabel}
                 />
               }
