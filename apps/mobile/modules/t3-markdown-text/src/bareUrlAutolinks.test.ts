@@ -123,6 +123,20 @@ describe("wrapBareUrlsForNativeParser", () => {
     );
   });
 
+  it("ends indented code at a prose line", () => {
+    const input = "    https://example.com/a...b:c\nprose\n    https://example.com/d...e:f";
+    expect(wrapBareUrlsForNativeParser(input)).toBe(
+      "    https://example.com/a...b:c\nprose\n    <https://example.com/d...e:f>",
+    );
+  });
+
+  it("keeps link-label context across code spans", () => {
+    const input = "[`code` https://example.com/a...b:c](https://destination.example/x)";
+    expect(wrapBareUrlsForNativeParser(input)).toBe(
+      "[`code` https://example.com/a...b:c](<https://destination.example/x>)",
+    );
+  });
+
   it("wraps URLs after a prose `<` comparison", () => {
     expect(wrapBareUrlsForNativeParser("value < limit; see https://example.com/a...b:c")).toBe(
       "value < limit; see <https://example.com/a...b:c>",

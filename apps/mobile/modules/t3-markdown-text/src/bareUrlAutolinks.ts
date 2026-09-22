@@ -127,12 +127,24 @@ function splitProseAndCode(prose: string): ProsePart[] {
 }
 
 function wrapBareUrlsInProse(prose: string): string {
-  return splitProseAndCode(prose)
-    .map((part) => {
+  const parts = splitProseAndCode(prose);
+  // Code spans masked with spaces so bracket/angle context spans fragments
+  // (`[` before a span still guards a URL after it) while code text itself
+  // can never open context. Lengths are preserved, so offsets stay aligned.
+  let masked = "";
+  const starts: number[] = [];
+  for (const part of parts) {
+    starts.push(masked.length);
+    masked += part.code ? " ".repeat(part.text.length) : part.text;
+  }
+  return parts
+    .map((part, index) => {
       if (part.code) return part.text;
-      return part.text.replace(BARE_URL_PATTERN, (match: string, offset: number, whole: string) => {
-        if (isInsideAngleSegment(whole, offset)) return match;
-        if (isInsideLinkLabel(whole, offset, match.length)) return match;
+      const base = starts[index] ?? 0;
+      return part.text.replace(BARE_URL_PATTERN, (match: string, offset: number) => {
+        const globalOffset = base + offset;
+        if (isInsideAngleSegment(masked, globalOffset)) return match;
+        if (isInsideLinkLabel(masked, globalOffset, match.length)) return match;
         const { url: trimmed, tail } = trimTrailingPunctuation(match);
         if (trimmed.endsWith("://")) return match;
         return `<${trimmed}>${tail}`;
@@ -196,7 +208,9 @@ export function wrapBareUrlsForNativeParser(markdown: string): string {
       out.push(line);
       inIndented = true;
     } else {
-      if (blank) inIndented = false;
+      // Any prose line (blank or not) ends an indented code block: without a
+      // blank line before it, a four-space line is paragraph continuation.
+      inIndented = false;
       prose.push(line);
     }
     prevBlank = blank;
