@@ -69,6 +69,23 @@ describe("wrapBareUrlsForNativeParser", () => {
     expect(wrapBareUrlsForNativeParser(input)).toBe(input);
   });
 
+  it("leaves shorter backtick runs inside multi-backtick spans alone", () => {
+    const input = "``foo ` https://example.com/a...b:c ``";
+    expect(wrapBareUrlsForNativeParser(input)).toBe(input);
+  });
+
+  it("wraps URLs after non-block HTML text, which stays paragraph text", () => {
+    // `<table><tr><td>` does not satisfy the CommonMark type-6 start
+    // condition (no whitespace/EOL/`>` after the tag name), so the URL after
+    // it is linkable prose.
+    expect(wrapBareUrlsForNativeParser("<table><tr><td>\nhttps://example.com/a")).toBe(
+      "<table><tr><td>\n<https://example.com/a>",
+    );
+    expect(wrapBareUrlsForNativeParser("<div> foo\nhttps://example.com/a")).toBe(
+      "<div> foo\n<https://example.com/a>",
+    );
+  });
+
   it("tracks fence character and length, including quoted fences", () => {
     const input = "````\n```\nhttps://example.com/a...b:c\n```\n````";
     expect(wrapBareUrlsForNativeParser(input)).toBe(input);
@@ -78,15 +95,24 @@ describe("wrapBareUrlsForNativeParser", () => {
     expect(wrapBareUrlsForNativeParser(tilde)).toBe(tilde);
   });
 
-  it("leaves raw HTML blocks alone", () => {
-    const pre = "<pre>\nhttps://example.com/a...b:c\n</pre>";
-    expect(wrapBareUrlsForNativeParser(pre)).toBe(pre);
-    const div = "<div>\nhttps://example.com/a...b:c\n</div>";
-    expect(wrapBareUrlsForNativeParser(div)).toBe(div);
-    const comment = "<!--\nhttps://example.com/a...b:c\n-->";
-    expect(wrapBareUrlsForNativeParser(comment)).toBe(comment);
-    expect(wrapBareUrlsForNativeParser("<div>https://example.com/a...b:c</div>")).toBe(
-      "<div>https://example.com/a...b:c</div>",
+  it("wraps URLs around tag lines, which the parser treats as plain text", () => {
+    // The native parser sets MD_FLAG_NOHTML, so raw HTML blocks are never
+    // formed: tag lines are paragraph text and a URL after them must wrap
+    // (verified against the vendored md4c.c: truncated LINK either way).
+    expect(wrapBareUrlsForNativeParser("<pre>\nhttps://example.com/a")).toBe(
+      "<pre>\n<https://example.com/a>",
+    );
+    expect(wrapBareUrlsForNativeParser("<div>\nhttps://example.com/a\n</div>")).toBe(
+      "<div>\n<https://example.com/a>\n</div>",
+    );
+    expect(wrapBareUrlsForNativeParser("<!--\nhttps://example.com/a\n-->")).toBe(
+      "<!--\n<https://example.com/a>\n-->",
+    );
+    expect(wrapBareUrlsForNativeParser("<table><tr><td>\nhttps://example.com/a")).toBe(
+      "<table><tr><td>\n<https://example.com/a>",
+    );
+    expect(wrapBareUrlsForNativeParser("<div> foo\nhttps://example.com/a")).toBe(
+      "<div> foo\n<https://example.com/a>",
     );
   });
 

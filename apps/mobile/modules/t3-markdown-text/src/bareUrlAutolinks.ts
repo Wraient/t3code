@@ -13,17 +13,18 @@
  * gap without touching the vendored native parser. Rendering is unchanged:
  * an explicit autolink displays the URL itself, exactly like a bare autolink.
  *
- * The rewrite errs toward leaving text alone: anything that looks like a
- * fenced code block, an indented code block, a raw HTML block, an inline code
- * span, an existing `<...>` segment, or a link label is passed through, so at
- * worst a URL keeps the old truncated behavior instead of rendering wrong.
+ * The rewrite errs toward leaving text alone: fenced code blocks, indented
+ * code blocks, inline code spans, `<...>` segments, and link labels pass
+ * through, so at worst a URL keeps the old truncated behavior instead of
+ * rendering wrong. (Deliberately no HTML block tracking: the native parser
+ * sets MD_FLAG_NOHTML, so raw HTML blocks are never formed — tag lines are
+ * plain paragraph text and URLs after them must wrap. Verified against the
+ * vendored md4c.c.)
  */
 
-// Code spans ride along untouched (may cross soft line breaks, but never a
-// blank line, mirroring CommonMark) so `` `https://...` `` keeps rendering as
-// code instead of gaining visible angle brackets.
-const PROSE_OR_CODE_PATTERN =
-  /((?<tick>`+)(?:[^`\n]|\n(?!\n))*?(?<!`)\k<tick>(?!`))|(https?:\/\/[^\s<>\]`"'*]+)/g;
+// Bare URLs. Inline code spans are split out beforehand by splitProseAndCode,
+// which understands multi-backtick delimiters, so this never sees code text.
+const BARE_URL_PATTERN = /https?:\/\/[^\s<>\]`"'*]+/g;
 // Optional blockquote/list prefix, then the fence run and the rest of the line.
 const FENCE_LINE_PATTERN =
   /^((?:\s{0,3}>\s?)*(?:\s{0,3}(?:[-*+]|\d{1,9}[.)])\s+)?\s{0,3})(`{3,}|~{3,})(.*)$/;
@@ -31,10 +32,6 @@ const INDENTED_CODE_PATTERN = /^(?:\s{0,3}>\s?)*(?: {4}|\t)/;
 // Trailing punctuation stripped from GFM autolinks; anything past it stays
 // plain text so parity with web holds (e.g. the `.` in "see https://x/y.").
 const TRAILING_PUNCTUATION_PATTERN = /[?!.,:*_~]+$/u;
-// A line opening with tag/autolink syntax passes through untouched: it is
-// either already linked (`<https://...>`) or inline HTML whose destinations
-// must not be rewritten (`<div>https://...</div>`).
-const INLINE_HTML_LINE_PATTERN = /^\s{0,3}<(?:\/?[A-Za-z]|!|\?)/;
 
 /**
  * True when the match at `offset` sits inside an unclosed `<...>` on the
@@ -43,7 +40,7 @@ const INLINE_HTML_LINE_PATTERN = /^\s{0,3}<(?:\/?[A-Za-z]|!|\?)/;
  * segment, so URLs after one are still wrapped.
  */
 function isInsideAngleSegment(whole: string, offset: number): boolean {
-  const open = whole.slice(0, offset).match(/<[^<>]*$/);
+  const open = whole.slice(0, offset).match(/<[^<>\n]*$/);
   if (!open) return false;
   return /^<(\/?[A-Za-z]|!|\?)/.test(open[0] + whole[offset]);
 }
@@ -76,25 +73,72 @@ function trimTrailingPunctuation(url: string): { url: string; tail: string } {
   return { url: withoutPunct.slice(0, end), tail: url.slice(end) };
 }
 
+type ProsePart = { code: boolean; text: string };
+
+/**
+ * Split prose into code spans and the text between them. A span opens with a
+ * maximal backtick run and closes at the next maximal run of the same length,
+ * so shorter runs inside (`` ``foo ` bar`` ``) stay code; a blank line between
+ * the runs means no span, mirroring CommonMark.
+ */
+function splitProseAndCode(prose: string): ProsePart[] {
+  const runs: Array<{ start: number; length: number }> = [];
+  const runPattern = /`+/g;
+  let runMatch: RegExpExecArray | null;
+  while ((runMatch = runPattern.exec(prose)) !== null) {
+    runs.push({ start: runMatch.index, length: runMatch[0].length });
+  }
+
+  const parts: ProsePart[] = [];
+  let pos = 0;
+  let i = 0;
+  const pushProse = (end: number) => {
+    if (end > pos) parts.push({ code: false, text: prose.slice(pos, end) });
+    pos = end;
+  };
+  while (i < runs.length) {
+    const opener = runs[i];
+    if (!opener) break;
+    let closer = -1;
+    for (let j = i + 1; j < runs.length; j += 1) {
+      const candidate = runs[j];
+      if (!candidate) break;
+      if (candidate.length !== opener.length) continue;
+      if (/\n[ \t]*\n/.test(prose.slice(opener.start + opener.length, candidate.start))) break;
+      closer = j;
+      break;
+    }
+    if (closer === -1) {
+      i += 1;
+      continue;
+    }
+    const closerRun = runs[closer];
+    if (!closerRun) break;
+    pushProse(opener.start);
+    parts.push({
+      code: true,
+      text: prose.slice(opener.start, closerRun.start + closerRun.length),
+    });
+    pos = closerRun.start + closerRun.length;
+    i = closer + 1;
+  }
+  pushProse(prose.length);
+  return parts;
+}
+
 function wrapBareUrlsInProse(prose: string): string {
-  return prose.replace(
-    PROSE_OR_CODE_PATTERN,
-    (
-      match: string,
-      code: string | undefined,
-      _tick: string | undefined,
-      url: string | undefined,
-      offset: number,
-      whole: string,
-    ) => {
-      if (code !== undefined || url === undefined) return match;
-      if (isInsideAngleSegment(whole, offset)) return match;
-      if (isInsideLinkLabel(whole, offset, match.length)) return match;
-      const { url: trimmed, tail } = trimTrailingPunctuation(url);
-      if (trimmed.endsWith("://")) return match;
-      return `<${trimmed}>${tail}`;
-    },
-  );
+  return splitProseAndCode(prose)
+    .map((part) => {
+      if (part.code) return part.text;
+      return part.text.replace(BARE_URL_PATTERN, (match: string, offset: number, whole: string) => {
+        if (isInsideAngleSegment(whole, offset)) return match;
+        if (isInsideLinkLabel(whole, offset, match.length)) return match;
+        const { url: trimmed, tail } = trimTrailingPunctuation(match);
+        if (trimmed.endsWith("://")) return match;
+        return `<${trimmed}>${tail}`;
+      });
+    })
+    .join("");
 }
 
 type Fence = { char: string; length: number };
@@ -109,33 +153,10 @@ function matchFence(line: string): { char: string; length: number; info: string 
   return { char: run.charAt(0), length: run.length, info };
 }
 
-/** End marker for a raw HTML block starting on `line`, or blank-line mode. */
-function matchHtmlBlockStart(line: string): { marker: string } | { blank: true } | null {
-  const trimmed = line.replace(/^\s{0,3}/, "");
-  if (trimmed.startsWith("<!--")) {
-    return trimmed.includes("-->") ? null : { marker: "-->" };
-  }
-  if (trimmed.startsWith("<?")) {
-    return trimmed.includes("?>") ? null : { marker: "?>" };
-  }
-  if (/^<!\[CDATA\[/i.test(trimmed)) {
-    return trimmed.includes("]]>") ? null : { marker: "]]>" };
-  }
-  const preformatted = trimmed.match(/^<\/?(pre|script|style|textarea)(?=[\s>/])/i);
-  if (preformatted) {
-    const tag = preformatted[1]?.toLowerCase() ?? "";
-    const close = `</${tag}>`;
-    // A self-contained line (`<pre>x</pre>`) protects just itself.
-    return trimmed.toLowerCase().includes(close, preformatted[0].length) ? null : { marker: close };
-  }
-  // Any other tag-looking line starts an HTML block until a blank line.
-  return /^<\/?[A-Za-z][^<>]*>\s*$/.test(trimmed) ? { blank: true } : null;
-}
-
 /**
  * Rewrite bare `http(s)://` URLs as explicit `<url>` autolinks so the native
- * parser links them whole. Fenced code, indented code, raw HTML blocks,
- * inline code spans, existing `<...>` segments, and link labels pass through.
+ * parser links them whole. Fenced code, indented code, inline code spans,
+ * `<...>` segments, and link labels pass through.
  */
 export function wrapBareUrlsForNativeParser(markdown: string): string {
   const out: string[] = [];
@@ -148,7 +169,6 @@ export function wrapBareUrlsForNativeParser(markdown: string): string {
   };
 
   let fence: Fence | null = null;
-  let htmlEnd: { marker: string } | { blank: true } | null = null;
   let inIndented = false;
   let prevBlank = true;
 
@@ -167,12 +187,6 @@ export function wrapBareUrlsForNativeParser(markdown: string): string {
       ) {
         fence = null;
       }
-    } else if (htmlEnd) {
-      flushProse();
-      out.push(line);
-      if ("marker" in htmlEnd ? line.toLowerCase().includes(htmlEnd.marker) : blank) {
-        htmlEnd = null;
-      }
     } else if (fenceMatch) {
       flushProse();
       out.push(line);
@@ -182,18 +196,8 @@ export function wrapBareUrlsForNativeParser(markdown: string): string {
       out.push(line);
       inIndented = true;
     } else {
-      const htmlStart = !blank ? matchHtmlBlockStart(line) : null;
-      if (htmlStart) {
-        flushProse();
-        out.push(line);
-        htmlEnd = htmlStart;
-      } else if (!blank && INLINE_HTML_LINE_PATTERN.test(line)) {
-        flushProse();
-        out.push(line);
-      } else {
-        if (blank) inIndented = false;
-        prose.push(line);
-      }
+      if (blank) inIndented = false;
+      prose.push(line);
     }
     prevBlank = blank;
   }
