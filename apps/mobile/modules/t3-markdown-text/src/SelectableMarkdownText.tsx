@@ -8,6 +8,7 @@ import {
   nativeMarkdownDocumentRuns,
   nativeMarkdownWithPreservedSoftBreaks,
 } from "./nativeMarkdownText";
+import { wrapBareUrlsForNativeParser } from "./bareUrlAutolinks";
 import { MarkdownImageRendererContext, NativeMarkdownBlock } from "./NativeMarkdownBlock";
 import {
   MarkdownContextClipboardContext,
@@ -51,7 +52,7 @@ export function SelectableMarkdownText({
   marginBottom = 0,
 }: SelectableMarkdownTextProps) {
   const chunks = useMemo(() => {
-    const parsedDocument = parseMarkdownWithOptions(markdown, {
+    const parsedDocument = parseMarkdownWithOptions(wrapBareUrlsForNativeParser(markdown), {
       gfm: true,
       html: true,
       math: false,
