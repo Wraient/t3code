@@ -63,4 +63,54 @@ describe("wrapBareUrlsForNativeParser", () => {
     expect(wrapBareUrlsForNativeParser("mail me@example.com")).toBe("mail me@example.com");
     expect(wrapBareUrlsForNativeParser("see https:// ok")).toBe("see https:// ok");
   });
+
+  it("leaves multiline inline code spans alone", () => {
+    const input = "`first\nhttps://example.com/a...b:c\nlast`";
+    expect(wrapBareUrlsForNativeParser(input)).toBe(input);
+  });
+
+  it("tracks fence character and length, including quoted fences", () => {
+    const input = "````\n```\nhttps://example.com/a...b:c\n```\n````";
+    expect(wrapBareUrlsForNativeParser(input)).toBe(input);
+    const quoted = "> ```\n> https://example.com/a...b:c\n> ```";
+    expect(wrapBareUrlsForNativeParser(quoted)).toBe(quoted);
+    const tilde = "~~~\nhttps://example.com/a...b:c\n~~~";
+    expect(wrapBareUrlsForNativeParser(tilde)).toBe(tilde);
+  });
+
+  it("leaves raw HTML blocks alone", () => {
+    const pre = "<pre>\nhttps://example.com/a...b:c\n</pre>";
+    expect(wrapBareUrlsForNativeParser(pre)).toBe(pre);
+    const div = "<div>\nhttps://example.com/a...b:c\n</div>";
+    expect(wrapBareUrlsForNativeParser(div)).toBe(div);
+    const comment = "<!--\nhttps://example.com/a...b:c\n-->";
+    expect(wrapBareUrlsForNativeParser(comment)).toBe(comment);
+    expect(wrapBareUrlsForNativeParser("<div>https://example.com/a...b:c</div>")).toBe(
+      "<div>https://example.com/a...b:c</div>",
+    );
+  });
+
+  it("leaves indented code blocks alone but still wraps nearby prose", () => {
+    const input = "see https://example.com/ok\n\n    https://example.com/a...b:c";
+    expect(wrapBareUrlsForNativeParser(input)).toBe(
+      "see <https://example.com/ok>\n\n    https://example.com/a...b:c",
+    );
+  });
+
+  it("wraps URLs after a prose `<` comparison", () => {
+    expect(wrapBareUrlsForNativeParser("value < limit; see https://example.com/a...b:c")).toBe(
+      "value < limit; see <https://example.com/a...b:c>",
+    );
+  });
+
+  it("leaves URLs inside link labels alone", () => {
+    // Label stays bare (no nested autolink); the destination is still wrapped,
+    // which stays valid markdown.
+    expect(
+      wrapBareUrlsForNativeParser("[https://example.com/a...b:c](https://destination.example/x)"),
+    ).toBe("[https://example.com/a...b:c](<https://destination.example/x>)");
+    expect(wrapBareUrlsForNativeParser("[see https://example.com/a] plain")).toBe(
+      "[see <https://example.com/a>] plain",
+    );
+  });
 });
